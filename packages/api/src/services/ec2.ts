@@ -1144,11 +1144,18 @@ export function createEc2Service(
                         const createdNatId = natGatewayId
                         rollbackActions.push({resource: createdNatId, run: async () => {
                             await client.send(new DeleteNatGatewayCommand({NatGatewayId: createdNatId}))
-                            for (let attempt = 0; attempt < 15; attempt++) {
-                                const result = await client.send(new DescribeNatGatewaysCommand({NatGatewayIds: [createdNatId]}))
-                                const state = result.NatGateways?.[0]?.State
+                            // The EC2 deletion waiter allows about ten minutes before dependent cleanup.
+                            for (let attempt = 0; attempt < 600; attempt++) {
+                                let state
+                                try {
+                                    const result = await client.send(new DescribeNatGatewaysCommand({NatGatewayIds: [createdNatId]}))
+                                    state = result.NatGateways?.[0]?.State
+                                } catch (error) {
+                                    if (error instanceof Error && error.name === 'NatGatewayNotFound') return
+                                    throw error
+                                }
                                 if (!state || state === 'deleted') return
-                                if (attempt < 14) await new Promise((resolve) => setTimeout(resolve, 1000))
+                                if (attempt < 599) await new Promise((resolve) => setTimeout(resolve, 1000))
                             }
                             throw new Error(`NAT Gateway ${createdNatId} was not deleted during rollback`)
                         }})
@@ -1182,6 +1189,7 @@ export function createEc2Service(
                         if (failures.length) throw new AggregateError([err, ...failures], 'Failed to clean up unsupported NAT Gateway')
                         natGatewayId = undefined
                         eipAllocationId = undefined
+                        privateRtbId = undefined
                     }
                 }
 
