@@ -113,6 +113,34 @@ describe('AwsSchedulerAdapter', () => {
         await expect(missing.get('schedule:ops/missing')).resolves.toBeNull()
     })
 
+    test('includes complete target and flexible window only in inspect metadata', async () => {
+        const target = {
+            Arn: 'arn:aws:lambda:us-east-1:000000000000:function:backup',
+            RoleArn: 'arn:aws:iam::000000000000:role/scheduler',
+            Input: '{"backup":"nightly"}',
+            RetryPolicy: {MaximumRetryAttempts: 3, MaximumEventAgeInSeconds: 3600},
+            DeadLetterConfig: {Arn: 'arn:aws:sqs:us-east-1:000000000000:failed-jobs'},
+        }
+        const flexibleTimeWindow = {Mode: 'FLEXIBLE', MaximumWindowInMinutes: 15}
+        const adapter = createAdapter(async (command) => {
+            if (command instanceof ListSchedulesCommand) {
+                return {Schedules: [{Name: 'nightly', GroupName: 'ops'}]}
+            }
+            expect(command).toBeInstanceOf(GetScheduleCommand)
+            return {Name: 'nightly', GroupName: 'ops', Target: target, FlexibleTimeWindow: flexibleTimeWindow}
+        })
+
+        const [listed] = await adapter.list()
+        expect(listed.metadata.target).toBe(target.Arn)
+        expect(listed.metadata).not.toHaveProperty('targetDetails')
+        expect(listed.metadata).not.toHaveProperty('flexibleTimeWindow')
+
+        const inspected = await adapter.get('schedule:ops/nightly')
+        expect(inspected?.metadata.target).toBe(target.Arn)
+        expect(inspected?.metadata.targetDetails).toEqual(target)
+        expect(inspected?.metadata.flexibleTimeWindow).toEqual(flexibleTimeWindow)
+    })
+
     test('creates and deletes a schedule with normalized defaults', async () => {
         const commands: unknown[] = []
         const adapter = createAdapter(async (command) => {

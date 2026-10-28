@@ -3,6 +3,7 @@ import {
     DeleteScheduleCommand,
     GetScheduleCommand,
     ListSchedulesCommand,
+    type GetScheduleOutput,
     type ScheduleSummary,
     type SchedulerClient,
 } from '@aws-sdk/client-scheduler'
@@ -14,12 +15,8 @@ const SCHEDULE_PREFIX = 'schedule:'
 const DEFAULT_GROUP = 'default'
 const DETAIL_BATCH_SIZE = 5
 
-type SchedulerRecord = ScheduleSummary & {
-    ScheduleExpression?: string
-    ScheduleExpressionTimezone?: string
-    Description?: string
-    FlexibleTimeWindow?: {Mode?: string}
-    Target?: {Arn?: string; RoleArn?: string}
+type SchedulerRecord = Omit<GetScheduleOutput, 'Target'> & {
+    Target?: GetScheduleOutput['Target'] | ScheduleSummary['Target']
 }
 
 /** AWS EventBridge Scheduler schedules through the neutral Scheduler category. */
@@ -38,7 +35,7 @@ export class AwsSchedulerAdapter implements CloudServiceAdapter {
     }
 
     async list(query: ResourceQuery = {}): Promise<CloudResource[]> {
-        const schedules: SchedulerRecord[] = []
+        const schedules: ScheduleSummary[] = []
         let nextToken: string | undefined
         do {
             const response = await this.scheduler.send(new ListSchedulesCommand({NextToken: nextToken}))
@@ -47,7 +44,7 @@ export class AwsSchedulerAdapter implements CloudServiceAdapter {
         } while (nextToken)
 
         const search = query.search?.trim().toLowerCase()
-        const matching = schedules.filter((schedule): schedule is SchedulerRecord & {Name: string} => {
+        const matching = schedules.filter((schedule): schedule is ScheduleSummary & {Name: string} => {
             const name = schedule.Name
             return !!name && (!search || name.toLowerCase().includes(search))
         })
@@ -65,10 +62,10 @@ export class AwsSchedulerAdapter implements CloudServiceAdapter {
     async get(id: string): Promise<CloudResource | null> {
         const {groupName, name} = parseScheduleId(id)
         const schedule = await this.loadSchedule(name, groupName)
-        return schedule ? scheduleResource(schedule) : null
+        return schedule ? scheduleResource(schedule, true) : null
     }
 
-    private async loadSchedule(name: string, groupName: string): Promise<SchedulerRecord | null> {
+    private async loadSchedule(name: string, groupName: string): Promise<GetScheduleOutput | null> {
         try {
             return await this.scheduler.send(new GetScheduleCommand({Name: name, GroupName: groupName}))
         } catch (error) {
@@ -128,9 +125,10 @@ export class AwsSchedulerAdapter implements CloudServiceAdapter {
     }
 }
 
-function scheduleResource(schedule: SchedulerRecord): CloudResource {
+function scheduleResource(schedule: SchedulerRecord, includeDetails = false): CloudResource {
     const name = schedule.Name ?? ''
     const groupName = schedule.GroupName ?? DEFAULT_GROUP
+    const roleArn = schedule.Target && 'RoleArn' in schedule.Target ? schedule.Target.RoleArn : undefined
     return {
         id: scheduleId(groupName, name),
         name,
@@ -151,8 +149,12 @@ function scheduleResource(schedule: SchedulerRecord): CloudResource {
             scheduleExpression: schedule.ScheduleExpression,
             scheduleExpressionTimezone: schedule.ScheduleExpressionTimezone,
             targetArn: schedule.Target?.Arn,
-            roleArn: schedule.Target?.RoleArn,
+            roleArn,
             flexibleTimeWindowMode: schedule.FlexibleTimeWindow?.Mode,
+            ...(includeDetails ? {
+                targetDetails: schedule.Target,
+                flexibleTimeWindow: schedule.FlexibleTimeWindow,
+            } : {}),
             description: schedule.Description,
             lastModificationDate: schedule.LastModificationDate?.toISOString(),
         },
